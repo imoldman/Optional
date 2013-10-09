@@ -10,14 +10,6 @@
 # ifndef ___OPTIONAL_HPP___
 # define ___OPTIONAL_HPP___
 
-# include <utility>
-# include <type_traits>
-# include <initializer_list>
-# include <cassert>
-# include <functional>
-# include <string>
-# include <stdexcept>
-
 # define REQUIRES(...) typename enable_if<__VA_ARGS__::value, bool>::type = false
 
 # if defined __clang__
@@ -27,7 +19,13 @@
 #  else
 #   define OPTIONAL_HAS_THIS_RVALUE_REFS 0
 #  endif
+#  if (__clang_major__ > 3) || (__clang_major__ == 3) && (__clang_minor__ >= 1)
+#   define OPTIONAL_HAS_INITIALIZER_LIST 1
+#  else
+#   define OPTIONAL_HAS_INITIALIZER_LIST 0
+#  endif
 # elif defined __GNUC__
+#  define OPTIONAL_HAS_INITIALIZER_LIST 1
 #  if (__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 7))
 #   define OPTIONAL_HAS_USING 1
 #  else
@@ -38,16 +36,41 @@
 #  else
 #   define OPTIONAL_HAS_THIS_RVALUE_REFS 0
 #  endif
+# elif defined _MSC_VER
+#  if _MSC_VER >= 1600              // vc10 (vs2010)
+#   define OPTIONAL_HAS_THIS_RVALUE_REFS 1
+#  else
+#   define OPTIONAL_HAS_THIS_RVALUE_REFS 0
+#  endif
+#  if _MSC_VER >= 1800              // vc12 (vs2013)
+#   define OPTIONAL_HAS_USING 1
+#   define OPTIONAL_HAS_INITIALIZER_LIST 1
+#  else
+#   define OPTIONAL_HAS_USING 0
+#   define OPTIONAL_HAS_INITIALIZER_LIST 0
+#  endif
 # else
 #  define OPTIONAL_HAS_THIS_RVALUE_REFS 0
 #  define OPTIONAL_HAS_USING 0
-# endif 
+#  define OPTIONAL_HAS_INITIALIZER_LIST 0
+# endif
 
+# include <utility>
+# include <type_traits>
+# if OPTIONAL_HAS_INITIALIZER_LIST
+#  include <initializer_list>
+# endif
+# include <cassert>
+# include <functional>
+# include <string>
+# include <stdexcept>
 
 namespace std{
 
 
 # if (defined __GNUC__) && ((__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 8)))
+    // leave it; our metafunctions are already defined.
+# elif (defined _MSC_VER) && (_MSC_VER >= 1700)
     // leave it; our metafunctions are already defined.
 # else
 
@@ -147,6 +170,8 @@ template<class _Ty> inline constexpr _Ty * constexpr_addressof(_Ty& _Val)
   # if defined __clang__ || defined __GNU_LIBRARY__
     __assert(expr, file, line);
   # elif defined __GNUC__
+    _assert(expr, file, line);
+  # elif defined _MSC_VER
     _assert(expr, file, line);
   # else
   #   error UNSUPPORTED COMPILER
