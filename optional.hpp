@@ -16,8 +16,10 @@
 #  define OPTIONAL_HAS_USING 1
 #  if (__clang_major__ > 2) || (__clang_major__ == 2) && (__clang_minor__ >= 9)
 #   define OPTIONAL_HAS_THIS_RVALUE_REFS 1
+#   define OPTIONAL_HAS_VARIADIC_TEMPLATE 1
 #  else
 #   define OPTIONAL_HAS_THIS_RVALUE_REFS 0
+#   define OPTIONAL_HAS_VARIADIC_TEMPLATE 0
 #  endif
 #  if (__clang_major__ > 3) || (__clang_major__ == 3) && (__clang_minor__ >= 1)
 #   define OPTIONAL_HAS_INITIALIZER_LIST 1
@@ -26,6 +28,7 @@
 #  endif
 # elif defined __GNUC__
 #  define OPTIONAL_HAS_INITIALIZER_LIST 1
+#  define OPTIONAL_HAS_VARIADIC_TEMPLATE 1
 #  if (__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 7))
 #   define OPTIONAL_HAS_USING 1
 #  else
@@ -37,6 +40,9 @@
 #   define OPTIONAL_HAS_THIS_RVALUE_REFS 0
 #  endif
 # elif defined _MSC_VER
+#  define _ALLOW_KEYWORD_MACROS
+#  define constexpr
+#  define noexcept
 #  if _MSC_VER >= 1600              // vc10 (vs2010)
 #   define OPTIONAL_HAS_THIS_RVALUE_REFS 1
 #  else
@@ -45,9 +51,11 @@
 #  if _MSC_VER >= 1800              // vc12 (vs2013)
 #   define OPTIONAL_HAS_USING 1
 #   define OPTIONAL_HAS_INITIALIZER_LIST 1
+#   define OPTIONAL_HAS_VARIADIC_TEMPLATE 1
 #  else
 #   define OPTIONAL_HAS_USING 0
 #   define OPTIONAL_HAS_INITIALIZER_LIST 0
+#   define OPTIONAL_HAS_VARIADIC_TEMPLATE 0
 #  endif
 # else
 #  define OPTIONAL_HAS_THIS_RVALUE_REFS 0
@@ -164,44 +172,33 @@ template<class _Ty> inline constexpr _Ty * constexpr_addressof(_Ty& _Val)
 #if defined NDEBUG
 # define ASSERTED_EXPRESSION(CHECK, EXPR) (EXPR)
 #else
-# define ASSERTED_EXPRESSION(CHECK, EXPR) ((CHECK) ? (EXPR) : (fail(#CHECK, __FILE__, __LINE__), (EXPR)))
-  inline void fail(const char* expr, const char* file, unsigned line)
-  {
-  # if defined __clang__ || defined __GNU_LIBRARY__
-    __assert(expr, file, line);
-  # elif defined __GNUC__
-    _assert(expr, file, line);
-  # elif defined _MSC_VER
-    _assert(expr, file, line);
-  # else
-  #   error UNSUPPORTED COMPILER
-  # endif
-  }
+# if defined __clang__ || defined __GNU_LIBRARY__
+#  define ASSERTED_EXPRESSION(CHECK, EXPR) ((CHECK) ? (EXPR) : (__assert(#CHECK, __FILE__, __LINE__), (EXPR)))
+# elif defined __GNUC__
+#  define ASSERTED_EXPRESSION(CHECK, EXPR) ((CHECK) ? (EXPR) : (_assert(#CHECK, __FILE__, __LINE__), (EXPR)))
+# elif defined _MSC_VER
+#  define ASSERTED_EXPRESSION(CHECK, EXPR) ((CHECK) ? (EXPR) : (_wassert(_CRT_WIDE(#CHECK), _CRT_WIDE(__FILE__), __LINE__), (EXPR)))
+# else
+#  error UNSUPPORTED COMPILER
 #endif
-
 
 template <typename T>
 struct has_overloaded_addressof
 {
-  template <class X>
-  static constexpr bool has_overload(...) { return false; }
-  
-  template <class X, size_t S = sizeof(std::declval< X&>().operator&()) >
-  static constexpr bool has_overload(bool) { return true; }
+  template <class X, size_t S = sizeof(std::declval< X&>().operator&())>
+  class has_overload : std::true_type {};
 
-  constexpr static bool value = has_overload<T>(true);
+  const static bool value = has_overload<T>::value;
 };
 
-
-
-template <typename T, REQUIRES(!has_overloaded_addressof<T>)>
-constexpr T* static_addressof(T& ref)
+template <typename T>
+constexpr T* static_addressof(T& ref, REQUIRES(!has_overloaded_addressof<T>))
 {
   return &ref;
 }
 
-template <typename T, REQUIRES(has_overloaded_addressof<T>)>
-T* static_addressof(T& ref)
+template <typename T>
+T* static_addressof(T& ref, REQUIRES(has_overloaded_addressof<T>))
 {
   return std::addressof(ref);
 }
@@ -211,21 +208,36 @@ T* static_addressof(T& ref)
 template <class U>
 struct is_not_optional
 {
-  constexpr static bool value = true;
+#ifdef _MSC_VER
+  const static bool value = true;
+#else
+  constexpr 
+#endif
 };
 
 template <class T>
 struct is_not_optional<optional<T>>
 {
-  constexpr static bool value = false;
+#ifdef _MSC_VER
+  const static bool value = false;
+#else
+  constexpr static bool value = true;
+#endif
 };
 
-
-constexpr struct trivial_init_t{} trivial_init{};
+#if OPTIONAL_HAS_INITIALIZER_LIST
+  constexpr struct trivial_init_t{} trivial_init{};
+#else
+  constexpr struct trivial_init_t{} trivial_init;
+#endif
 
 
 // 20.5.6, In-place construction
-constexpr struct in_place_t{} in_place{};
+#if OPTIONAL_HAS_INITIALIZER_LIST
+  constexpr struct in_place_t{} in_place{};
+#else
+  constexpr struct in_place_t{} in_place;
+#endif
 
 
 // 20.5.7, Disengaged state indicator
@@ -233,15 +245,24 @@ struct nullopt_t
 {
   struct init{};
   constexpr nullopt_t(init){};
-}; 
-constexpr nullopt_t nullopt{nullopt_t::init{}};
+};
+#if OPTIONAL_HAS_INITIALIZER_LIST
+  constexpr nullopt_t nullopt{nullopt_t::init{}};
+#else
+  constexpr nullopt_t nullopt(nullopt_t::init());
+#endif
 
 
 // 20.5.8, class bad_optional_access
 class bad_optional_access : public logic_error {
 public:
+#if OPTIONAL_HAS_INITIALIZER_LIST
   explicit bad_optional_access(const string& what_arg) : logic_error{what_arg} {}
   explicit bad_optional_access(const char* what_arg) : logic_error{what_arg} {}
+#else
+  explicit bad_optional_access(const string& what_arg) : logic_error(what_arg) {}
+  explicit bad_optional_access(const char* what_arg) : logic_error(what_arg) {}
+#endif
 };
 
 
@@ -253,8 +274,10 @@ union storage_t
 
   constexpr storage_t( trivial_init_t ) noexcept : dummy_() {};
 
+#if OPTIONAL_HAS_VARIADIC_TEMPLATE
   template <class... Args>
   constexpr storage_t( Args&&... args ) : value_(constexpr_forward<Args>(args)...) {}
+#endif
 
   ~storage_t(){}
 };
@@ -268,14 +291,19 @@ union constexpr_storage_t
 
     constexpr constexpr_storage_t( trivial_init_t ) noexcept : dummy_() {};
 
+#if OPTIONAL_HAS_VARIADIC_TEMPLATE
     template <class... Args>
     constexpr constexpr_storage_t( Args&&... args ) : value_(constexpr_forward<Args>(args)...) {}
+#endif
 
     ~constexpr_storage_t() = default;
 };
 
-
-constexpr struct only_set_initialized_t{} only_set_initialized{};
+#if OPTIONAL_HAS_INITIALIZER_LIST
+  constexpr struct only_set_initialized_t{} only_set_initialized{};
+#else
+  constexpr struct only_set_initialized_t{} only_set_initialized;
+#endif
 
 
 template <class T>
