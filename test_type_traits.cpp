@@ -10,20 +10,20 @@ struct Val
 {
   Val(){}
   Val( Val const & ){}
-  Val( Val && ) noexcept {}
+  Val( Val && ) NOEXCEPT_WORKAROUND(true) {}
   
   Val & operator=( Val const & ) = delete;
-  Val & operator=( Val && ) noexcept = delete;
+  Val & operator=( Val && ) NOEXCEPT_WORKAROUND(true) = delete;
 };
 
 struct Safe
 {
     Safe(){}
     Safe( Safe const & ){}
-    Safe( Safe && ) noexcept {}
+    Safe( Safe && ) NOEXCEPT_WORKAROUND(true) {}
     
     Safe & operator=( Safe const & ){ return *this; }
-    Safe & operator=( Safe && ) noexcept { return *this; }
+    Safe & operator=( Safe && ) NOEXCEPT_WORKAROUND(true) { return *this; }
 };
 
 struct Unsafe

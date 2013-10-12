@@ -22,12 +22,16 @@
 
 # if defined __clang__
 #  define OPTIONAL_HAS_USING 1
+#  define OPTIONAL_HAS_CONSTEXPR 1
+#  define OPTIONAL_HAS_NOEXCEPT 1
 #  if (__clang_major__ > 2) || (__clang_major__ == 2) && (__clang_minor__ >= 9)
 #   define OPTIONAL_HAS_THIS_RVALUE_REFS 1
 #  else
 #   define OPTIONAL_HAS_THIS_RVALUE_REFS 0
 #  endif
 # elif defined __GNUC__
+#  define OPTIONAL_HAS_CONSTEXPR 1
+#  define OPTIONAL_HAS_NOEXCEPT 1
 #  if (__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 7))
 #   define OPTIONAL_HAS_USING 1
 #  else
@@ -38,16 +42,41 @@
 #  else
 #   define OPTIONAL_HAS_THIS_RVALUE_REFS 0
 #  endif
+# elif defined _MSC_VER
+#  define OPTIONAL_HAS_CONSTEXPR 0
+#  define OPTIONAL_HAS_THIS_RVALUE_REFS 0
+#  define OPTIONAL_HAS_NOEXCEPT 0
+#  if _MSC_VER >= 1800              // vc12 (vs2013)
+#   define OPTIONAL_HAS_USING 1
+#  else
+#   define OPTIONAL_HAS_THIS_RVALUE_REFS 0
+#   define OPTIONAL_HAS_USING 0
+#  endif
 # else
 #  define OPTIONAL_HAS_THIS_RVALUE_REFS 0
 #  define OPTIONAL_HAS_USING 0
 # endif 
 
+#if OPTIONAL_HAS_CONSTEXPR
+# define CONSTEXPR_WORKAROUND(st) constexpr st
+#else
+//# define _ALLOW_KEYWORD_MACROS
+# define constexpr
+# define CONSTEXPR_WORKAROUND(st) const st
+#endif
+
+#if OPTIONAL_HAS_NOEXCEPT
+# define NOEXCEPT_WORKAROUND(st) noexcept(st)
+#else
+# define NOEXCEPT_WORKAROUND(st)
+#endif
 
 namespace std{
 
 
 # if (defined __GNUC__) && ((__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 8)))
+    // leave it; our metafunctions are already defined.
+# elif (defined _MSC_VER) && (_MSC_VER >= 1700)
     // leave it; our metafunctions are already defined.
 # else
 
@@ -95,7 +124,7 @@ struct is_nothrow_move_assignable
 
   template <class X>
   struct has_nothrow_move_assign<X, true> {
-    constexpr static bool value = noexcept( std::declval<X&>() = std::declval<X&&>() );
+    constexpr static bool value = NOEXCEPT_WORKAROUND( std::declval<X&>() = std::declval<X&&>() );
   };
 
   constexpr static bool value = has_nothrow_move_assign<T, is_assignable<T&, T&&>::value>::value;
@@ -116,18 +145,18 @@ template <class T> class optional<T&>;
 
 
 // workaround: std utility functions aren't constexpr yet
-template <class T> inline constexpr T&& constexpr_forward(typename std::remove_reference<T>::type& t) noexcept
+template <class T> inline constexpr T&& constexpr_forward(typename std::remove_reference<T>::type& t) NOEXCEPT_WORKAROUND(true)
 {
   return static_cast<T&&>(t);
 }
 
-template <class T> inline constexpr T&& constexpr_forward(typename std::remove_reference<T>::type&& t) noexcept
+template <class T> inline constexpr T&& constexpr_forward(typename std::remove_reference<T>::type&& t) NOEXCEPT_WORKAROUND(true)
 {
     static_assert(!std::is_lvalue_reference<T>::value, "!!");
     return static_cast<T&&>(t);
 }
 
-template <class T> inline constexpr typename std::remove_reference<T>::type&& constexpr_move(T&& t) noexcept
+template <class T> inline constexpr typename std::remove_reference<T>::type&& constexpr_move(T&& t) NOEXCEPT_WORKAROUND(true)
 {
     return static_cast<typename std::remove_reference<T>::type&&>(t);
 }
@@ -141,20 +170,19 @@ template<class _Ty> inline constexpr _Ty * constexpr_addressof(_Ty& _Val)
 #if defined NDEBUG
 # define ASSERTED_EXPRESSION(CHECK, EXPR) (EXPR)
 #else
-# define ASSERTED_EXPRESSION(CHECK, EXPR) ((CHECK) ? (EXPR) : (fail(#CHECK, __FILE__, __LINE__), (EXPR)))
-  inline void fail(const char* expr, const char* file, unsigned line)
-  {
-  # if defined __clang__ || defined __GNU_LIBRARY__
-    __assert(expr, file, line);
-  # elif defined __GNUC__
-    _assert(expr, file, line);
-  # else
-  #   error UNSUPPORTED COMPILER
-  # endif
-  }
+# if defined __clang__ || defined __GNU_LIBRARY__
+#  define ASSERTED_EXPRESSION(CHECK, EXPR) ((CHECK) ? (EXPR) : (__assert(#CHECK, __FILE__, __LINE__), (EXPR)))
+# elif defined __GNUC__
+#  define ASSERTED_EXPRESSION(CHECK, EXPR) ((CHECK) ? (EXPR) : (_assert(#CHECK, __FILE__, __LINE__), (EXPR)))
+# elif defined _MSC_VER
+#  define ASSERTED_EXPRESSION(CHECK, EXPR) ((CHECK) ? (EXPR) : (_wassert(_CRT_WIDE(#CHECK), _CRT_WIDE(__FILE__), __LINE__), (EXPR)))
+# else
+#  error UNSUPPORTED COMPILER
+# endif
 #endif
 
 
+#if OPTIONAL_HAS_CONSTEXPR
 template <typename T>
 struct has_overloaded_addressof
 {
@@ -166,19 +194,25 @@ struct has_overloaded_addressof
 
   constexpr static bool value = has_overload<T>(true);
 };
-
-
-
-template <typename T, REQUIRES(!has_overloaded_addressof<T>)>
-constexpr T* static_addressof(T& ref)
+#else
+template <typename T>
+struct has_overloaded_addressof
 {
-  return &ref;
-}
+  template <class X>
+  static false_type has_overload(...);
 
-template <typename T, REQUIRES(has_overloaded_addressof<T>)>
+  template <class X, size_t S = sizeof(std::declval< X&>().operator&()) >
+  static true_type has_overload(int);
+
+  const static bool value = has_overload<T>(0)::value;
+};
+#endif
+
+
+template <typename T>
 T* static_addressof(T& ref)
 {
-  return std::addressof(ref);
+  return (reinterpret_cast<T *>((&const_cast<char&>(reinterpret_cast<const char&>(ref)))));
 }
 
 
@@ -186,13 +220,13 @@ T* static_addressof(T& ref)
 template <class U>
 struct is_not_optional
 {
-  constexpr static bool value = true;
+  CONSTEXPR_WORKAROUND(static bool value = true);
 };
 
 template <class T>
 struct is_not_optional<optional<T>>
 {
-  constexpr static bool value = false;
+  CONSTEXPR_WORKAROUND(static bool value = false);
 };
 
 
@@ -224,12 +258,15 @@ template <class T>
 union storage_t
 {
   unsigned char dummy_;
-  T value_;
+  unsigned char value_[sizeof(T)];
 
-  constexpr storage_t( trivial_init_t ) noexcept : dummy_() {};
+  constexpr storage_t( trivial_init_t ) NOEXCEPT_WORKAROUND(true) : dummy_() {};
 
   template <class... Args>
-  constexpr storage_t( Args&&... args ) : value_(constexpr_forward<Args>(args)...) {}
+  constexpr storage_t( Args&&... args ) {new (value_) T(constexpr_forward<Args>(args)...);}
+
+  constexpr const T& value() const {return *reinterpret_cast<const T*>(value_);}
+  constexpr T& value() { return *reinterpret_cast<T*>(value_); }
 
   ~storage_t(){}
 };
@@ -239,12 +276,15 @@ template <class T>
 union constexpr_storage_t
 {
     unsigned char dummy_;
-    T value_;
+    unsigned char value_[sizeof(T)];
 
-    constexpr constexpr_storage_t( trivial_init_t ) noexcept : dummy_() {};
+    constexpr constexpr_storage_t( trivial_init_t ) NOEXCEPT_WORKAROUND(true) : dummy_() {};
 
     template <class... Args>
-    constexpr constexpr_storage_t( Args&&... args ) : value_(constexpr_forward<Args>(args)...) {}
+    constexpr constexpr_storage_t( Args&&... args ) {new (value_) T(constexpr_forward<Args>(args)...);}
+
+    constexpr const T& value() const { return *reinterpret_cast<const T*>(value_); }
+    constexpr T& value() { return *reinterpret_cast<T*>(value_); }
 
     ~constexpr_storage_t() = default;
 };
@@ -259,9 +299,9 @@ struct optional_base
     bool init_;
     storage_t<T> storage_;
 
-    constexpr optional_base() noexcept : init_(false), storage_(trivial_init) {};
+    constexpr optional_base() NOEXCEPT_WORKAROUND(true) : init_(false), storage_(trivial_init) {};
 
-    constexpr explicit optional_base(only_set_initialized_t, bool init) noexcept : init_(init), storage_(trivial_init) {};
+    constexpr explicit optional_base(only_set_initialized_t, bool init) NOEXCEPT_WORKAROUND(true) : init_(init), storage_(trivial_init) {};
 
     explicit constexpr optional_base(const T& v) : init_(true), storage_(v) {}
 
@@ -274,7 +314,7 @@ struct optional_base
     explicit optional_base(in_place_t, std::initializer_list<U> il, Args&&... args)
         : init_(true), storage_(il, std::forward<Args>(args)...) {}
 
-    ~optional_base() { if (init_) storage_.value_.T::~T(); }
+    ~optional_base() { if (init_) storage_.value().T::~T(); }
 };
 
 
@@ -284,9 +324,9 @@ struct constexpr_optional_base
     bool init_;
     constexpr_storage_t<T> storage_;
 
-    constexpr constexpr_optional_base() noexcept : init_(false), storage_(trivial_init) {};
+    constexpr constexpr_optional_base() NOEXCEPT_WORKAROUND(true) : init_(false), storage_(trivial_init) {};
 
-    constexpr explicit constexpr_optional_base(only_set_initialized_t, bool init) noexcept : init_(init), storage_(trivial_init) {};
+    constexpr explicit constexpr_optional_base(only_set_initialized_t, bool init) NOEXCEPT_WORKAROUND(true) : init_(init), storage_(trivial_init) {};
 
     explicit constexpr constexpr_optional_base(const T& v) : init_(true), storage_(v) {}
 
@@ -320,26 +360,26 @@ class optional : private OptionalBase<T>
   static_assert( !std::is_same<typename std::decay<T>::type, in_place_t>::value, "bad T" );
   
 
-  constexpr bool initialized() const noexcept { return OptionalBase<T>::init_; }
-  T* dataptr() {  return std::addressof(OptionalBase<T>::storage_.value_); }
-  constexpr const T* dataptr() const { return static_addressof(OptionalBase<T>::storage_.value_); }
+  constexpr bool initialized() const NOEXCEPT_WORKAROUND(true){ return OptionalBase<T>::init_; }
+  T* dataptr() {  return std::addressof(OptionalBase<T>::storage_.value()); }
+  constexpr const T* dataptr() const { return static_addressof(OptionalBase<T>::storage_.value()); }
   
 # if OPTIONAL_HAS_THIS_RVALUE_REFS == 1
   constexpr const T& contained_val() const& { return OptionalBase<T>::storage_.value_; }
   T& contained_val() & { return OptionalBase<T>::storage_.value_; }
   T&& contained_val() && { return std::move(OptionalBase<T>::storage_.value_); }
 # else
-  constexpr const T& contained_val() const { return OptionalBase<T>::storage_.value_; }
-  T& contained_val() { return OptionalBase<T>::storage_.value_; }
+  constexpr const T& contained_val() const { return OptionalBase<T>::storage_.value(); }
+  T& contained_val() { return OptionalBase<T>::storage_.value(); }
 # endif
 
-  void clear() noexcept { 
+  void clear() NOEXCEPT_WORKAROUND(true) {
     if (initialized()) dataptr()->T::~T();
     OptionalBase<T>::init_ = false; 
   }
   
   template <class... Args>
-  void initialize(Args&&... args) noexcept(noexcept(T(std::forward<Args>(args)...)))
+  void initialize(Args&&... args) NOEXCEPT_WORKAROUND(NOEXCEPT_WORKAROUND(T(std::forward<Args>(args)...)))
   {
     assert(!OptionalBase<T>::init_);
     new (dataptr()) T(std::forward<Args>(args)...);
@@ -347,7 +387,7 @@ class optional : private OptionalBase<T>
   }
 
   template <class U, class... Args>
-  void initialize(std::initializer_list<U> il, Args&&... args) noexcept(noexcept(T(il, std::forward<Args>(args)...)))
+  void initialize(std::initializer_list<U> il, Args&&... args) NOEXCEPT_WORKAROUND(NOEXCEPT_WORKAROUND(T(il, std::forward<Args>(args)...)))
   {
     assert(!OptionalBase<T>::init_);
     new (dataptr()) T(il, std::forward<Args>(args)...);
@@ -358,8 +398,8 @@ public:
   typedef T value_type;
 
   // 20.5.5.1, constructors
-  constexpr optional() noexcept : OptionalBase<T>()  {};
-  constexpr optional(nullopt_t) noexcept : OptionalBase<T>() {};
+  constexpr optional() NOEXCEPT_WORKAROUND(true) : OptionalBase<T>()  {};
+  constexpr optional(nullopt_t) NOEXCEPT_WORKAROUND(true) : OptionalBase<T>() {};
 
   optional(const optional& rhs) 
   : OptionalBase<T>(only_set_initialized, rhs.initialized())
@@ -367,7 +407,7 @@ public:
     if (rhs.initialized()) new (dataptr()) T(*rhs);
   }
 
-  optional(optional&& rhs) noexcept(std::is_nothrow_move_constructible<T>::value)
+  optional(optional&& rhs) NOEXCEPT_WORKAROUND(std::is_nothrow_move_constructible<T>::value)
   : OptionalBase<T>(only_set_initialized, rhs.initialized())
   {
     if (rhs.initialized()) new (dataptr()) T(std::move(*rhs));
@@ -389,7 +429,7 @@ public:
   ~optional() = default;
 
   // 20.5.4.3, assignment
-  optional& operator=(nullopt_t) noexcept
+  optional& operator=(nullopt_t) NOEXCEPT_WORKAROUND(true)
   {
     clear();
     return *this;
@@ -404,7 +444,7 @@ public:
   }
   
   optional& operator=(optional&& rhs) 
-  noexcept(std::is_nothrow_move_assignable<T>::value && std::is_nothrow_move_constructible<T>::value)
+  NOEXCEPT_WORKAROUND(std::is_nothrow_move_assignable<T>::value && std::is_nothrow_move_constructible<T>::value)
   {
     if      (initialized() == true  && rhs.initialized() == false) clear();
     else if (initialized() == false && rhs.initialized() == true)  initialize(std::move(*rhs));
@@ -441,7 +481,7 @@ public:
   }
   
   // 20.5.4.4 Swap
-  void swap(optional<T>& rhs) noexcept(is_nothrow_move_constructible<T>::value && noexcept(swap(declval<T&>(), declval<T&>())))
+  void swap(optional<T>& rhs) NOEXCEPT_WORKAROUND(is_nothrow_move_constructible<T>::value && NOEXCEPT_WORKAROUND(swap(declval<T&>(), declval<T&>())))
   {
     if      (initialized() == true  && rhs.initialized() == false) { rhs.initialize(std::move(**this)); clear(); }
     else if (initialized() == false && rhs.initialized() == true)  { initialize(std::move(*rhs)); rhs.clear(); }
@@ -475,7 +515,7 @@ public:
     return initialized() ? contained_val() : (throw bad_optional_access("bad optional access"), contained_val());
   }
   
-  constexpr explicit operator bool() const noexcept { return initialized(); }  
+  constexpr explicit operator bool() const NOEXCEPT_WORKAROUND(true) { return initialized(); }
   
 # if OPTIONAL_HAS_THIS_RVALUE_REFS == 1
 
@@ -514,24 +554,24 @@ class optional<T&>
 public:
 
   // 20.5.5.1, construction/destruction
-  constexpr optional() noexcept : ref(nullptr) {}
+  constexpr optional() NOEXCEPT_WORKAROUND(true) : ref(nullptr) {}
   
-  constexpr optional(nullopt_t) noexcept : ref(nullptr) {}
+  constexpr optional(nullopt_t) NOEXCEPT_WORKAROUND(true) : ref(nullptr) {}
    
-  constexpr optional(T& v) noexcept : ref(static_addressof(v)) {}
+  constexpr optional(T& v) NOEXCEPT_WORKAROUND(true) : ref(static_addressof(v)) {}
   
   optional(T&&) = delete;
   
-  constexpr optional(const optional& rhs) noexcept : ref(rhs.ref) {}
+  constexpr optional(const optional& rhs) NOEXCEPT_WORKAROUND(true) : ref(rhs.ref) {}
   
-  explicit constexpr optional(in_place_t, T& v) noexcept : ref(static_addressof(v)) {}
+  explicit constexpr optional(in_place_t, T& v) NOEXCEPT_WORKAROUND(true) : ref(static_addressof(v)) {}
   
   explicit optional(in_place_t, T&&) = delete;
   
   ~optional() = default;
   
   // 20.5.5.2, mutation
-  optional& operator=(nullopt_t) noexcept {
+  optional& operator=(nullopt_t) NOEXCEPT_WORKAROUND(true) {
     ref = nullptr;
     return *this;
   }
@@ -547,7 +587,7 @@ public:
   // }
   
   template <typename U> 
-  auto operator=(U&& rhs) noexcept
+  auto operator=(U&& rhs) NOEXCEPT_WORKAROUND(true)
   -> typename enable_if
   <
     is_same<typename decay<U>::type, optional<T&>>::value,
@@ -559,7 +599,7 @@ public:
   }
   
   template <typename U> 
-  auto operator=(U&& rhs) noexcept
+  auto operator=(U&& rhs) NOEXCEPT_WORKAROUND(true)
   -> typename enable_if
   <
     !is_same<typename decay<U>::type, optional<T&>>::value,
@@ -567,14 +607,14 @@ public:
   >::type
   = delete;
   
-  void emplace(T& v) noexcept {
+  void emplace(T& v) NOEXCEPT_WORKAROUND(true) {
     ref = static_addressof(v);
   }
   
   void emplace(T&&) = delete;
   
   
-  void swap(optional<T&>& rhs) noexcept
+  void swap(optional<T&>& rhs) NOEXCEPT_WORKAROUND(true)
   {
     std::swap(ref, rhs.ref);
   }
@@ -592,7 +632,7 @@ public:
     return ref ? *ref : (throw bad_optional_access("bad optional access"), *ref);
   }
   
-  explicit constexpr operator bool() const noexcept { 
+  explicit constexpr operator bool() const NOEXCEPT_WORKAROUND(true) {
     return ref != nullptr; 
   }  
   
@@ -644,62 +684,62 @@ template <class T> constexpr bool operator>=(const optional<T>& x, const optiona
 
 
 // 20.5.9 Comparison with nullopt
-template <class T> constexpr bool operator==(const optional<T>& x, nullopt_t) noexcept
+template <class T> constexpr bool operator==(const optional<T>& x, nullopt_t) NOEXCEPT_WORKAROUND(true)
 {
   return (!x);
 }
 
-template <class T> constexpr bool operator==(nullopt_t, const optional<T>& x) noexcept
+template <class T> constexpr bool operator==(nullopt_t, const optional<T>& x) NOEXCEPT_WORKAROUND(true)
 {
   return (!x);
 }
 
-template <class T> constexpr bool operator!=(const optional<T>& x, nullopt_t) noexcept
+template <class T> constexpr bool operator!=(const optional<T>& x, nullopt_t) NOEXCEPT_WORKAROUND(true)
 {
   return bool(x);
 }
 
-template <class T> constexpr bool operator!=(nullopt_t, const optional<T>& x) noexcept
+template <class T> constexpr bool operator!=(nullopt_t, const optional<T>& x) NOEXCEPT_WORKAROUND(true)
 {
   return bool(x);
 }
 
-template <class T> constexpr bool operator<(const optional<T>&, nullopt_t) noexcept
+template <class T> constexpr bool operator<(const optional<T>&, nullopt_t) NOEXCEPT_WORKAROUND(true)
 {
   return false;
 }
 
-template <class T> constexpr bool operator<(nullopt_t, const optional<T>& x) noexcept
+template <class T> constexpr bool operator<(nullopt_t, const optional<T>& x) NOEXCEPT_WORKAROUND(true)
 {
   return bool(x);
 }
 
-template <class T> constexpr bool operator<=(const optional<T>& x, nullopt_t) noexcept
+template <class T> constexpr bool operator<=(const optional<T>& x, nullopt_t) NOEXCEPT_WORKAROUND(true)
 {
   return (!x);
 }
 
-template <class T> constexpr bool operator<=(nullopt_t, const optional<T>&) noexcept
+template <class T> constexpr bool operator<=(nullopt_t, const optional<T>&) NOEXCEPT_WORKAROUND(true)
 {
   return true;
 }
 
-template <class T> constexpr bool operator>(const optional<T>& x, nullopt_t) noexcept
+template <class T> constexpr bool operator>(const optional<T>& x, nullopt_t) NOEXCEPT_WORKAROUND(true)
 {
   return bool(x);
 }
 
-template <class T> constexpr bool operator>(nullopt_t, const optional<T>&) noexcept
+template <class T> constexpr bool operator>(nullopt_t, const optional<T>&) NOEXCEPT_WORKAROUND(true)
 {
   return false;
 }
 
-template <class T> constexpr bool operator>=(const optional<T>&, nullopt_t) noexcept
+template <class T> constexpr bool operator>=(const optional<T>&, nullopt_t) NOEXCEPT_WORKAROUND(true)
 {
   return true;
 }
 
-template <class T> constexpr bool operator>=(nullopt_t, const optional<T>& x) noexcept
+template <class T> constexpr bool operator>=(nullopt_t, const optional<T>& x) NOEXCEPT_WORKAROUND(true)
 {
   return (!x);
 }
@@ -893,7 +933,7 @@ template <class T> constexpr bool operator>=(const T& v, const optional<const T&
 
 // 20.5.12 Specialized algorithms 
 template <class T> 
-void swap(optional<T>& x, optional<T>& y) noexcept(noexcept(x.swap(y)))
+void swap(optional<T>& x, optional<T>& y) NOEXCEPT_WORKAROUND(NOEXCEPT_WORKAROUND(x.swap(y)))
 {
   x.swap(y);
 }

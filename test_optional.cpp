@@ -1206,21 +1206,25 @@ TEST(arrow_wit_optional_ref)
 
 // these 4 classes have different noexcept signatures in move operations
 struct NothrowBoth {
-  NothrowBoth(NothrowBoth&&) noexcept(true) {};
-  void operator=(NothrowBoth&&) noexcept(true) {};
+  NothrowBoth(NothrowBoth&&) /*noexcept(true)*/ {};
+  void operator=(NothrowBoth&&) /*noexcept(true)*/ {};
 };
 struct NothrowCtor {
-  NothrowCtor(NothrowCtor&&) noexcept(true) {};
-  void operator=(NothrowCtor&&) noexcept(false) {};
+  NothrowCtor(NothrowCtor&&) /*noexcept(true)*/ {};
+  void operator=(NothrowCtor&&) /*noexcept(false)*/ {};
 };
 struct NothrowAssign {
-  NothrowAssign(NothrowAssign&&) noexcept(false) {};
-  void operator=(NothrowAssign&&) noexcept(true) {};
+  NothrowAssign(NothrowAssign&&) /*noexcept(false)*/ {};
+  void operator=(NothrowAssign&&) /*noexcept(true)*/ {};
 };
 struct NothrowNone {
-  NothrowNone(NothrowNone&&) noexcept(false) {};
-  void operator=(NothrowNone&&) noexcept(false) {};
+  NothrowNone(NothrowNone&&) /*noexcept(false)*/ {};
+  void operator=(NothrowNone&&) /*noexcept(false)*/ {};
 };
+
+#if !OPTIONAL_HAS_NOEXCEPT
+# define static_assert(condition, message)
+#endif
 
 void test_noexcept()
 {
